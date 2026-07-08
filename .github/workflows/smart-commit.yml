@@ -15,77 +15,76 @@ on:
           - normal
           - aggressive
 
-env:
-  COMMIT_MINIMAL: 1
-  COMMIT_NORMAL: 3
-  COMMIT_AGGRESSIVE: 8
-
 jobs:
-  calculate-strategy:
+  auto-commit:
     runs-on: ubuntu-latest
-    outputs:
-      commit_count: ${{ steps.strategy.outputs.count }}
-      should_run: ${{ steps.strategy.outputs.run }}
+    permissions:
+      contents: write
     
     steps:
-      - name: Determine commit strategy
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Determine commit count
         id: strategy
         run: |
           DAY_OF_WEEK=$(date +%u)
           RANDOM_CHANCE=$((RANDOM % 100))
           
+          # Weekend off chance
           if [[ $DAY_OF_WEEK -gt 5 && $RANDOM_CHANCE -lt 15 ]]; then
-            echo "run=false" >> $GITHUB_OUTPUT
-            echo "Taking weekend off like a human"
+            echo "count=0" >> $GITHUB_OUTPUT
+            echo "Skipping weekend"
             exit 0
           fi
           
+          # Set count based on input or random
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            COUNT_VAR="COMMIT_${{ github.event.inputs.intensity }}"
-            COUNT=${!COUNT_VAR}
+            case "${{ github.event.inputs.intensity }}" in
+              minimal) COUNT=1 ;;
+              normal) COUNT=3 ;;
+              aggressive) COUNT=8 ;;
+            esac
           else
             COUNT=$((RANDOM % 4 + 1))
           fi
           
           echo "count=$COUNT" >> $GITHUB_OUTPUT
-          echo "run=true" >> $GITHUB_OUTPUT
-
-  execute-commits:
-    needs: calculate-strategy
-    if: needs.calculate-strategy.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    
-    strategy:
-      matrix:
-        iteration: [1, 2, 3, 4, 5]
-    
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
+          echo "Will make $COUNT commits"
       
-      - name: Generate commit persona
-        id: persona
+      - name: Configure git
         run: |
-          PREFIXES=("feat" "fix" "docs" "style" "refactor" "test" "chore")
-          PREFIX=${PREFIXES[$RANDOM % ${#PREFIXES[@]}]}
-          MESSAGES=("update config" "sync data" "bump version" "cleanup" "optimize" "lint")
-          MSG=${MESSAGES[$RANDOM % ${#MESSAGES[@]}]}
-          echo "message=$PREFIX: $MSG [automated]" >> $GITHUB_OUTPUT
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
       
-      - name: Execute commit
+      - name: Execute commits
+        if: steps.strategy.outputs.count != '0'
         run: |
-          git config user.name "DevOps Bot"
-          git config user.email "devops@company.internal"
+          COUNT=${{ steps.strategy.outputs.count }}
           
-          if [[ $((RANDOM % 3)) -eq 0 ]]; then
-            echo "# $(date)" >> .activity.log
-            git add .activity.log
-            git commit -m "${{ steps.persona.outputs.message }}"
-          else
-            git commit --allow-empty -m "${{ steps.persona.outputs.message }}"
-          fi
+          for i in $(seq 1 $COUNT); do
+            # Generate random commit message
+            PREFIXES=("feat" "fix" "docs" "style" "refactor" "test" "chore")
+            MESSAGES=("update config" "sync data" "bump version" "cleanup" "optimize" "lint")
+            PREFIX=${PREFIXES[$RANDOM % ${#PREFIXES[@]}]}
+            MSG=${MESSAGES[$RANDOM % ${#MESSAGES[@]}]}
+            
+            # 30% chance to touch a file, 70% empty commit
+            if [[ $((RANDOM % 10)) -lt 3 ]]; then
+              echo "# $(date)" >> .activity.log
+              git add .activity.log
+              git commit -m "$PREFIX: $MSG [automated]"
+            else
+              git commit --allow-empty -m "$PREFIX: $MSG [automated]"
+            fi
+            
+            # Random delay 30-180 seconds between commits
+            if [[ $i -lt $COUNT ]]; then
+              DELAY=$((RANDOM % 150 + 30))
+              echo "Waiting ${DELAY}s before next commit..."
+              sleep $DELAY
+            fi
+          done
+          
           git push
